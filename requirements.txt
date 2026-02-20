@@ -1,4 +1,6 @@
-streamlit
-pandas
-openpyxl
+streamlit>=1.31.0
+pandas>=2.1.0
 numpy
+openpyxl
+python-calamine
+pyarrow
