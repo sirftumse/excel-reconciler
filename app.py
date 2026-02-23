@@ -4,11 +4,12 @@ import numpy as np
 from io import BytesIO
 import re
 import time
+from difflib import SequenceMatcher
 
 # --- PERFORMANCE CONFIG ---
 pd.set_option("styler.render.max_elements", 20000000)
 
-@st.cache_data(show_spinner="Loading data...")
+@st.cache_data(show_spinner="Loading datasets...")
 def load_excel_data(f1, f2):
     try:
         d1 = pd.read_excel(f1, engine='calamine')
@@ -18,11 +19,15 @@ def load_excel_data(f1, f2):
         d2 = pd.read_excel(f2)
     return d1, d2
 
-st.set_page_config(page_title="Global Matcher Pro ⚡", layout="wide")
-st.title("🔍 Global Two-Way Reconciliation")
-st.markdown("Finds matches, conflicts, and missing records with **Live Progress Tracking**.")
+def get_similarity(a, b):
+    """Calculates how similar two names are (0.0 to 1.0)"""
+    return SequenceMatcher(None, str(a).lower(), str(b).lower()).ratio()
 
-# Initialize session state for persistent results
+st.set_page_config(page_title="Global Matcher Pro ⚡", layout="wide")
+st.title("🔍 Global Two-Way Reconciliation (Ultimate)")
+st.markdown("Combines **Fuzzy Matching**, **Date Standardization**, and **Live Tracking**.")
+
+# Initialize session state
 if 'reconciliation_done' not in st.session_state:
     st.session_state.reconciliation_done = False
     st.session_state.mismatch_df = None
@@ -43,10 +48,7 @@ if file1 and file2:
 
     st.divider()
     st.subheader("🛠️ Step 1: Map Columns")
-    
-    all_h1 = df1.columns.tolist()
-    all_h2 = df2.columns.tolist()
-    
+    all_h1, all_h2 = df1.columns.tolist(), df2.columns.tolist()
     selected_headers = st.multiselect("Select columns to verify:", options=all_h1, default=all_h1)
 
     mapping = {}
@@ -58,16 +60,21 @@ if file1 and file2:
 
     id_col = st.selectbox("Anchor Column (Unique ID / Enrollment No):", options=selected_headers)
 
-    if st.button("🚀 Run Secure Two-Way Search"):
-        
-        # --- PROGRESS BAR INITIALIZATION ---
-        progress_text = "Processing data... Please wait."
-        my_bar = st.progress(0, text=progress_text)
+    if st.button("🚀 Run Intelligent Search"):
+        # --- PROGRESS BAR ---
+        my_bar = st.progress(0, text="Initializing...")
         
         def smart_clean(val):
-            val = str(val).strip().lower()
-            val = re.sub(r'[.\-/_,\s]', '', val)
-            return val if val not in ['nan', '', 'none'] else 'empty'
+            """Logic 1 & 2: Date Standardization & Punctuation Strip"""
+            val_str = str(val).strip().lower()
+            # Try parsing as date to normalize 29.04.2003 vs 29-04-2003
+            try:
+                if len(val_str) > 5: # basic check for date-like length
+                    return pd.to_datetime(val_str).strftime('%Y%m%d')
+            except:
+                pass
+            # Fallback to stripping punctuation
+            return re.sub(r'[.\-/_,\s]', '', val_str)
 
         def get_norm_df(temp_df, headers_list, is_file2=False):
             actual_cols = [mapping[h] if is_file2 else h for h in headers_list]
@@ -77,88 +84,91 @@ if file1 and file2:
             norm.columns = headers_list 
             return norm
 
-        # 1. Normalize
-        my_bar.progress(10, text="Step 1/4: Normalizing data formats...")
+        # Step 1: Normalization
+        my_bar.progress(10, text="Normalizing date and text formats...")
         df1_norm = get_norm_df(df1, selected_headers, is_file2=False)
         df2_norm = get_norm_df(df2, selected_headers, is_file2=True)
 
-        # 2. Build Lookups
-        my_bar.progress(25, text="Step 2/4: Building search index...")
+        # Step 2: Instant Set-Check (Logic 4)
+        my_bar.progress(20, text="Calculating missing ID sets...")
+        ids_a = set(df1_norm[id_col].tolist())
+        ids_b = set(df2_norm[id_col].tolist())
+        only_in_b = ids_b - ids_a
+
+        # Step 3: Indexing for Speed
         f2_id_lookup = {}
         for idx, val in enumerate(df2_norm[id_col]):
             f2_id_lookup.setdefault(val, []).append(idx)
-
-        f1_id_set = set(df1_norm[id_col].tolist()) 
 
         f2_fp_lookup = {}
         f2_fps = df2_norm.apply(lambda x: "|".join(x), axis=1)
         for idx, fp in enumerate(f2_fps):
             f2_fp_lookup.setdefault(fp, []).append(idx)
 
-        mismatches = []
-        missing_entries = []
-        used_f2_rows = set()
+        mismatches, missing_entries, used_f2_rows = [], [], set()
         match_count = 0
-
-        # --- FORWARD PASS (File A -> File B) ---
         f1_fps = df1_norm.apply(lambda x: "|".join(x), axis=1)
-        total_rows = len(df1)
-        
-        for i in range(total_rows):
-            # Update progress bar every 10% for performance
-            if i % (max(1, total_rows // 10)) == 0:
-                perc = 25 + int((i / total_rows) * 50)
-                my_bar.progress(perc, text=f"Step 3/4: Comparing {fname1} (Row {i}/{total_rows})")
+
+        # Step 4: Intelligent Forward Scan (A -> B)
+        total = len(df1)
+        for i in range(total):
+            # Update progress bar
+            if i % (max(1, total // 20)) == 0:
+                my_bar.progress(25 + int((i/total)*60), text=f"Deep Scanning {fname1}...")
 
             row1_id = df1_norm.iloc[i][id_col]
             fp = f1_fps.iloc[i]
             
+            # Exact Match
             if fp in f2_fp_lookup and f2_fp_lookup[fp]:
                 match_idx = f2_fp_lookup[fp].pop(0)
                 used_f2_rows.add(match_idx)
                 match_count += 1
                 continue 
             
+            # ID Match but Data Conflict
             if row1_id in f2_id_lookup:
-                potential_idx = next((idx for idx in f2_id_lookup[row1_id] if idx not in used_f2_rows), None)
-                if potential_idx is not None:
-                    used_f2_rows.add(potential_idx)
-                    diffs = [h for h in selected_headers if df1_norm.iloc[i][h] != df2_norm.iloc[potential_idx][h]]
-                    reason = f"Diff in: {', '.join(diffs)}"
+                pot_idx = next((idx for idx in f2_id_lookup[row1_id] if idx not in used_f2_rows), None)
+                if pot_idx is not None:
+                    used_f2_rows.add(pot_idx)
+                    diffs = [h for h in selected_headers if df1_norm.iloc[i][h] != df2_norm.iloc[pot_idx][h]]
                     
+                    # Logic 3: Fuzzy Name Similarity Score
+                    similarity_text = ""
+                    for h in diffs:
+                        if "name" in h.lower():
+                            score = get_similarity(df1.iloc[i][h], df2.iloc[pot_idx][mapping[h]])
+                            similarity_text = f" (Name Similarity: {int(score*100)}%)"
+                            break
+
+                    reason = f"Diff in: {', '.join(diffs)}{similarity_text}"
                     r1 = df1.iloc[i][selected_headers].to_dict()
-                    r1.update({'Source File': fname1, 'Status': 'Mismatch', 'Reason': reason})
-                    r2 = {h: df2.iloc[potential_idx][mapping[h]] for h in selected_headers}
-                    r2.update({'Source File': fname2, 'Status': 'Mismatch', 'Reason': reason})
+                    r1.update({'Source': fname1, 'Status': 'Mismatch', 'Reason': reason})
+                    r2 = {h: df2.iloc[pot_idx][mapping[h]] for h in selected_headers}
+                    r2.update({'Source': fname2, 'Status': 'Mismatch', 'Reason': reason})
                     mismatches.extend([r1, r2, {k: "---" for k in r1.keys()}])
                     continue
 
+            # Definitely Missing in B
             r_miss = df1.iloc[i][selected_headers].to_dict()
-            r_miss.update({'Source File': fname1, 'Status': f'Missing in {fname2}', 'Reason': 'ID not found'})
+            r_miss.update({'Source': fname1, 'Status': f'Not in {fname2}', 'Reason': 'ID Missing'})
             missing_entries.append(r_miss)
 
-        # --- REVERSE PASS (File B -> File A) ---
-        my_bar.progress(85, text=f"Step 4/4: Scanning {fname2} for unique entries...")
+        # Reverse Scan (Entries unique to B)
+        my_bar.progress(90, text=f"Scanning {fname2} for orphans...")
         for j in range(len(df2)):
-            if j not in used_f2_rows:
-                row2_id = df2_norm.iloc[j][id_col]
-                if row2_id not in f1_id_set:
-                    r_extra = {h: df2.iloc[j][mapping[h]] for h in selected_headers}
-                    r_extra.update({'Source File': fname2, 'Status': f'Missing in {fname1}', 'Reason': 'ID not found'})
-                    missing_entries.append(r_extra)
+            if j not in used_f2_rows and df2_norm.iloc[j][id_col] in only_in_b:
+                r_extra = {h: df2.iloc[j][mapping[h]] for h in selected_headers}
+                r_extra.update({'Source': fname2, 'Status': f'Not in {fname1}', 'Reason': 'ID Missing'})
+                missing_entries.append(r_extra)
 
-        my_bar.progress(100, text="Reconciliation Complete!")
+        my_bar.progress(100, text="Processing Complete!")
         time.sleep(1)
-        my_bar.empty() # Remove progress bar after finishing
+        my_bar.empty()
 
-        # Store in session state
         st.session_state.mismatch_df = pd.DataFrame(mismatches).astype(object)
         st.session_state.missing_df = pd.DataFrame(missing_entries).astype(object)
-        st.session_state.stats = {
-            "Match": match_count, 
-            "Conflict": len(mismatches) // 3, 
-            "Missing": len(missing_entries)
-        }
+        st.session_state.stats = {"Match": match_count, "Conflict": len(mismatches)//3, "Missing": len(missing_entries)}
         st.session_state.reconciliation_done = True
 
 # --- UI DISPLAY SECTION ---
@@ -168,38 +178,30 @@ if st.session_state.reconciliation_done:
     fn = st.session_state.fnames
     
     m1, m2, m3 = st.columns(3)
-    m1.metric("Identical Rows", s["Match"])
-    m2.metric("Data Conflicts", s["Conflict"])
+    m1.metric("Exact Row Matches", s["Match"])
+    m2.metric("Data Conflicts (Pairs)", s["Conflict"])
     m3.metric("Total Missing Records", s["Missing"])
 
-    tab1, tab2 = st.tabs(["⚠️ View Mismatches", "❌ View Missing Entries"])
+    tab1, tab2 = st.tabs(["⚠️ Conflicts & Fuzzy Mismatches", "❌ Missing Entries (Orphans)"])
     
     with tab1:
-        st.write("### Data Mismatches")
-        search_m = st.text_input("Search Mismatches:", key="search_m")
+        search_m = st.text_input("Filter Mismatches:", key="search_m")
         df_m = st.session_state.mismatch_df
         if search_m and not df_m.empty:
             df_m = df_m[df_m.apply(lambda r: r.astype(str).str.contains(search_m, case=False).any(), axis=1)]
         st.dataframe(df_m, use_container_width=True)
 
     with tab2:
-        st.write(f"### Records missing from either file")
-        search_mis = st.text_input("Search Missing Entries:", key="search_mis")
+        search_mis = st.text_input("Filter Missing Records:", key="search_mis")
         df_mis = st.session_state.missing_df
         if search_mis and not df_mis.empty:
             df_mis = df_mis[df_mis.apply(lambda r: r.astype(str).str.contains(search_mis, case=False).any(), axis=1)]
         st.dataframe(df_mis, use_container_width=True)
 
     st.divider()
-    st.write("### 📥 Download Split Report")
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         st.session_state.mismatch_df.to_excel(writer, index=False, sheet_name="Mismatches")
         st.session_state.missing_df.to_excel(writer, index=False, sheet_name="Missing_Entries")
     
-    st.download_button(
-        label="Download Multi-Sheet Excel Report",
-        data=output.getvalue(),
-        file_name="reconciliation_final.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("📥 Download Final Report (Excel)", output.getvalue(), "reconciliation_final.xlsx")
