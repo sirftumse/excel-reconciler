@@ -27,18 +27,23 @@ def get_similarity(str1, str2):
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Global Matcher Pro ⚡", layout="wide")
 
-if "sel_headers" not in st.session_state: st.session_state.sel_headers = []
-if "anchor_cols" not in st.session_state: st.session_state.anchor_cols = []
-if "saved_mapping" not in st.session_state: st.session_state.saved_mapping = {}
+# 1. INITIALIZE RESET COUNTER
+if "reset_count" not in st.session_state:
+    st.session_state.reset_count = 0
+if "saved_mapping" not in st.session_state:
+    st.session_state.saved_mapping = {}
 
-def reset_all():
-    for key in ["sel_headers", "anchor_cols", "saved_mapping"]:
-        st.session_state[key] = [] if isinstance(st.session_state[key], list) else {}
-    st.rerun()
+# 2. THE RESET FUNCTION
+def trigger_reset():
+    st.session_state.reset_count += 1  # Changing this forces widgets to rebuild
+    st.session_state.saved_mapping = {}
 
+# --- UI HEADER ---
 col_t, col_r = st.columns([4, 1])
-col_t.title("🔍 High-Speed Robust Reconciliation")
-col_r.button("♻️ Reset All Selections", on_click=reset_all, use_container_width=True)
+with col_t:
+    st.title("🔍 High-Speed Robust Reconciliation")
+with col_r:
+    st.button("♻️ Reset All Selections", on_click=trigger_reset, use_container_width=True)
 
 file1 = st.file_uploader("Upload Master File (File A)", type=['xlsx'])
 file2 = st.file_uploader("Upload Comparison File (File B)", type=['xlsx'])
@@ -50,21 +55,20 @@ if file1 and file2:
     st.divider()
     st.subheader("🛠️ Step 1: Define Row Identity (Anchors)")
     
-    valid_defaults = [h for h in st.session_state.sel_headers if h in all_h1]
-    if not valid_defaults: valid_defaults = all_h1
+    # Unique keys based on reset_count ensures a fresh start
+    selected_headers = st.multiselect(
+        "Select columns to verify/show:", 
+        options=all_h1, 
+        default=all_h1,
+        key=f"header_sel_{st.session_state.reset_count}"
+    )
 
-    try:
-        selected_headers = st.multiselect("Select columns to verify/show:", options=all_h1, default=valid_defaults, key="header_selector")
-    except:
-        selected_headers = st.multiselect("Select columns to verify/show:", options=all_h1, default=all_h1, key="header_selector_fallback")
-    
-    st.session_state.sel_headers = selected_headers
-    valid_anchors = [h for h in st.session_state.anchor_cols if h in selected_headers]
-    if not valid_anchors:
-        valid_anchors = [h for h in selected_headers if any(x in h.lower() for x in ['session', 'subject', 'date', 'timing', 'enrollment'])]
-
-    anchor_cols = st.multiselect("Select Anchor Columns (Used for exact match):", options=selected_headers, default=valid_anchors, key="anchor_selector")
-    st.session_state.anchor_cols = anchor_cols
+    anchor_cols = st.multiselect(
+        "Select Anchor Columns (Used for exact match):", 
+        options=selected_headers, 
+        default=[h for h in selected_headers if any(x in h.lower() for x in ['session', 'subject', 'date', 'timing', 'enrollment'])],
+        key=f"anchor_sel_{st.session_state.reset_count}"
+    )
 
     st.subheader("🛠️ Step 2: Confirm Mapping")
     mapping, missing_mappings = {}, []
@@ -73,19 +77,30 @@ if file1 and file2:
     grid = st.columns(3)
     for i, h in enumerate(selected_headers):
         with grid[i % 3]:
-            prev_val = st.session_state.saved_mapping.get(h)
-            d_idx = options_with_blank.index(prev_val) if prev_val in all_h2 else ([x.lower() for x in all_h2].index(h.lower()) + 1 if h.lower() in [x.lower() for x in all_h2] else 0)
-            val = st.selectbox(f"'{h}' maps to:", options=options_with_blank, index=d_idx, key=f"map_{h}_{file1.name}")
+            # Auto-detect mapping logic
+            try: d_idx = [x.lower() for x in all_h2].index(h.lower()) + 1
+            except: d_idx = 0
+            
+            val = st.selectbox(
+                f"'{h}' maps to:", 
+                options=options_with_blank, 
+                index=d_idx, 
+                key=f"map_{h}_{st.session_state.reset_count}"
+            )
+            
             if val == "-- Select Column --":
-                mapping[h] = None; missing_mappings.append(h)
+                mapping[h] = None
+                missing_mappings.append(h)
             else:
                 mapping[h] = val
-                st.session_state.saved_mapping[h] = val
 
     if st.button("🚀 Run Optimized Search"):
-        if missing_mappings:
+        if not anchor_cols:
+            st.error("❌ Please select at least one Anchor Column.")
+        elif missing_mappings:
             st.error(f"❌ Map these columns: {', '.join(missing_mappings)}")
         else:
+            # --- LOGIC (DATE/STRING CLEANING) ---
             def anchor_clean(val):
                 return re.sub(r'[^a-z0-9]', '', str(val).strip().lower().replace('.', '-'))
 
@@ -100,7 +115,7 @@ if file1 and file2:
             used_f2, matched_f1, match_count = set(), set(), 0
             bar = st.progress(0, text="Processing...")
 
-            # Stage 1: Exact
+            # --- MATCHING ENGINE ---
             f2_map = {}
             for idx, row in df2.iterrows():
                 fp = "|".join([anchor_clean(row[mapping[a]]) for a in anchor_cols])
@@ -114,7 +129,6 @@ if file1 and file2:
                     row2 = df2.iloc[target_idx]
                     diffs = [c for c in selected_headers if precision_clean(row1[c]) != precision_clean(row2[mapping[c]])]
                     
-                    # Row preparation for display/export
                     r1 = row1[selected_headers].to_dict()
                     r2 = {h: row2[mapping[h]] for h in selected_headers}
                     
@@ -128,7 +142,7 @@ if file1 and file2:
                         r2.update({'Source': file2.name, 'Status': 'Mismatch', 'Diff_Cols': ",".join(diffs)})
                         mismatches.extend([r1, r2, {k: "---" for k in r1.keys()}])
 
-            # Stage 2: Fuzzy Logic for unmatched File A
+            # Fuzzy Stage
             unmatched = [i for i in df1.index if i not in matched_f1]
             f2_rem = df2[~df2.index.isin(used_f2)]
             for idx, i in enumerate(unmatched):
@@ -138,12 +152,10 @@ if file1 and file2:
                 v1 = str(row1.get(s_key, '')).lower()
                 best_s, best_i = -1, -1
                 for j_idx, row2 in f2_rem.iterrows():
-                    if j_idx in used_f2: continue
                     v2 = str(row2.get(mapping.get(s_key, ''), '')).lower()
                     if not v1 or v1[:3] == v2[:3]:
                         score = get_similarity(v1, v2)
                         if score > best_s: best_s, best_i = score, j_idx
-                
                 if best_i != -1 and best_s > 0.5:
                     used_f2.add(best_i); row2 = df2.iloc[best_i]
                     diffs = [c for c in selected_headers if precision_clean(row1[c]) != precision_clean(row2[mapping[c]])]
@@ -155,7 +167,6 @@ if file1 and file2:
                     r_m = row1[selected_headers].to_dict()
                     r_m.update({'Source': file1.name, 'Status': 'Missing in B'}); missing_entries.append(r_m)
 
-            # Collect Extra rows from File B
             for j in df2.index:
                 if j not in used_f2:
                     row2 = df2.iloc[j]
@@ -168,22 +179,13 @@ if file1 and file2:
             t1, t2 = st.tabs(["⚠️ Mismatches", "❌ Missing/Extra"])
             with t1:
                 if mismatches: st.dataframe(pd.DataFrame(mismatches).style.apply(lambda row: ['background-color: #ffcccc' if col in str(row.get('Diff_Cols', "")).split(",") else '' for col in row.index], axis=1), use_container_width=True)
-                else: st.info("No mismatches found!")
             with t2:
                 if missing_entries: st.dataframe(pd.DataFrame(missing_entries), use_container_width=True)
-                else: st.info("No missing or extra entries!")
 
-            # --- EXCEL EXPORT WITH PAIRED PERFECT MATCHES ---
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                summary_data = {
-                    "Metric": ["Perfect Matches", "Conflicts (Mismatches)", "Missing or Extra Rows"],
-                    "Count": [match_count, len(mismatches)//3, len(missing_entries)]
-                }
-                pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name="Summary Report")
-                
+                pd.DataFrame({"Metric": ["Matches", "Conflicts", "Missing"], "Count": [match_count, len(mismatches)//3, len(missing_entries)]}).to_excel(writer, index=False, sheet_name="Summary")
                 if mismatches: pd.DataFrame(mismatches).to_excel(writer, index=False, sheet_name="Mismatches")
                 if missing_entries: pd.DataFrame(missing_entries).to_excel(writer, index=False, sheet_name="Missing_Extra")
                 if perfect_matches_paired: pd.DataFrame(perfect_matches_paired).to_excel(writer, index=False, sheet_name="Perfect_Matches")
-            
             st.download_button("📥 Download Final Report", output.getvalue(), "reconciliation_report.xlsx")
