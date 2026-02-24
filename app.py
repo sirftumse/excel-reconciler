@@ -41,7 +41,7 @@ if file1 and file2:
     st.subheader("🛠️ Step 1: Define Row Identity (Anchors)")
     
     selected_headers = st.multiselect("Select columns to verify/show:", options=all_h1, default=all_h1)
-    suggested_anchors = [h for h in selected_headers if any(x in h.lower() for x in ['session', 'subject', 'date', 'timing'])]
+    suggested_anchors = [h for h in selected_headers if any(x in h.lower() for x in ['session', 'subject', 'date', 'timing', 'enrollment'])]
     
     anchor_cols = st.multiselect(
         "Select Anchor Columns (Used for exact match):", 
@@ -76,21 +76,16 @@ if file1 and file2:
         else:
             # --- PRE-PROCESSING ---
             def anchor_clean(val):
-                # Normalizes date separators for anchor matching
                 v = str(val).strip().lower().replace('.', '-')
                 return re.sub(r'[^a-z0-9]', '', v)
 
             def precision_clean(val):
                 v = str(val).strip()
-                # 1. Handle Excel numeric date codes
                 if v.isdigit() and len(v) == 5:
                     try: v = pd.to_datetime(int(v), unit='D', origin='1899-12-30').strftime('%d-%m-%Y')
                     except: pass
-                
-                # 2. Normalize date separators: Treat "." and "-" as the same
-                # This ensures 10.02.2026 and 10-02-2026 match perfectly
-                v = v.replace('.', '-')
-                return v 
+                # Handle . and - as same for dates
+                return v.replace('.', '-')
 
             mismatches, missing_entries = [], []
             used_f2 = set()
@@ -114,7 +109,6 @@ if file1 and file2:
                     used_f2.add(target_idx)
                     row2 = df2.iloc[target_idx]
                     
-                    # Uses the updated precision_clean to ignore separator differences
                     diffs = [c for c in selected_headers if precision_clean(row1[c]) != precision_clean(row2[mapping[c]])]
                     if not diffs:
                         match_count += 1
@@ -132,20 +126,22 @@ if file1 and file2:
             
             total_unmatched = len(unmatched_f1)
             for idx, i in enumerate(unmatched_f1):
-                if idx % 5 == 0:
-                    p_val = 40 + int((idx / total_unmatched) * 55) if total_unmatched > 0 else 90
-                    my_bar.progress(p_val, text=f"Stage 2: Scanning candidates ({idx+1}/{total_unmatched})...")
+                if idx % 10 == 0:
+                    p_val = 40 + int((idx / total_unmatched) * 55) if total_unmatched > 0 else 95
+                    my_bar.progress(p_val, text=f"Stage 2: Scanning candidates...")
                 
                 row1 = df1.iloc[i]
-                sub1 = str(row1.get('Subject', '')).lower()
-                best_score, best_idx = -1, -1
+                # Look for similarity in Subject or Enrollment No if they exist
+                search_key = 'Subject' if 'Subject' in row1 else (selected_headers[0] if selected_headers else None)
+                val1 = str(row1.get(search_key, '')).lower() if search_key else ""
                 
+                best_score, best_idx = -1, -1
                 for j_idx, row2 in f2_remaining.iterrows():
                     if j_idx in used_f2: continue
-                    sub2 = str(row2.get(mapping.get('Subject', ''), '')).lower()
+                    val2 = str(row2.get(mapping.get(search_key, ''), '')).lower() if search_key else ""
                     
-                    if sub1[:3] == sub2[:3] or sub1[-3:] == sub2[-3:]:
-                        score = get_similarity(sub1, sub2)
+                    if not val1 or val1[:3] == val2[:3]:
+                        score = get_similarity(val1, val2)
                         if score > best_score:
                             best_score, best_idx = score, j_idx
                 
@@ -153,7 +149,6 @@ if file1 and file2:
                     used_f2.add(best_idx)
                     row2 = df2.iloc[best_idx]
                     diffs = [c for c in selected_headers if precision_clean(row1[c]) != precision_clean(row2[mapping[c]])]
-                    
                     r1 = row1[selected_headers].to_dict()
                     r1.update({'Source': file1.name, 'Status': 'Fuzzy Match', 'Diff_Cols': ",".join(diffs)})
                     r2 = {h: row2[mapping[h]] for h in selected_headers}
@@ -173,7 +168,9 @@ if file1 and file2:
                     missing_entries.append(r_extra)
 
             my_bar.progress(100, text="Finished!")
-            st.success(f"Done! Matches: {match_count} | Conflicts: {len(mismatches)//3}")
+            
+            # --- UPDATED RESULT SUMMARY ---
+            st.success(f"Done! Matches: {match_count} | Conflicts: {len(mismatches)//3} | Missing/Extra: {len(missing_entries)}")
             
             t1, t2 = st.tabs(["⚠️ Mismatches", "❌ Missing/Extra"])
             with t1:
@@ -191,4 +188,4 @@ if file1 and file2:
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 if mismatches: pd.DataFrame(mismatches).to_excel(writer, index=False, sheet_name="Mismatches")
                 if missing_entries: pd.DataFrame(missing_entries).to_excel(writer, index=False, sheet_name="Missing_Extra")
-            st.download_button("📥 Download Report", output.getvalue(), "report.xlsx")
+            st.download_button("📥 Download Report", output.getvalue(), "reconciliation_report.xlsx")
