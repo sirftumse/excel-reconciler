@@ -76,13 +76,20 @@ if file1 and file2:
         else:
             # --- PRE-PROCESSING ---
             def anchor_clean(val):
-                return re.sub(r'[^a-z0-9]', '', str(val).strip().lower())
+                # Normalizes date separators for anchor matching
+                v = str(val).strip().lower().replace('.', '-')
+                return re.sub(r'[^a-z0-9]', '', v)
 
             def precision_clean(val):
                 v = str(val).strip()
+                # 1. Handle Excel numeric date codes
                 if v.isdigit() and len(v) == 5:
                     try: v = pd.to_datetime(int(v), unit='D', origin='1899-12-30').strftime('%d-%m-%Y')
                     except: pass
+                
+                # 2. Normalize date separators: Treat "." and "-" as the same
+                # This ensures 10.02.2026 and 10-02-2026 match perfectly
+                v = v.replace('.', '-')
                 return v 
 
             mismatches, missing_entries = [], []
@@ -92,7 +99,7 @@ if file1 and file2:
             
             my_bar = st.progress(0, text="Starting...")
 
-            # STAGE 1: Exact Anchor Matching (Very Fast)
+            # STAGE 1: Exact Anchor Matching
             my_bar.progress(10, text="Stage 1: Exact Matching...")
             f2_idx_map = {}
             for idx, row in df2.iterrows():
@@ -107,6 +114,7 @@ if file1 and file2:
                     used_f2.add(target_idx)
                     row2 = df2.iloc[target_idx]
                     
+                    # Uses the updated precision_clean to ignore separator differences
                     diffs = [c for c in selected_headers if precision_clean(row1[c]) != precision_clean(row2[mapping[c]])]
                     if not diffs:
                         match_count += 1
@@ -120,29 +128,22 @@ if file1 and file2:
             # STAGE 2: Optimized Best-Pair Search
             unmatched_f1 = [i for i in df1.index if i not in matched_f1]
             available_f2_indices = [j for j in df2.index if j not in used_f2]
-            
-            # Create a localized dictionary for available F2 rows to speed up lookups
             f2_remaining = df2.iloc[available_f2_indices]
             
             total_unmatched = len(unmatched_f1)
             for idx, i in enumerate(unmatched_f1):
-                if idx % 5 == 0: # Update UI less frequently to save time
+                if idx % 5 == 0:
                     p_val = 40 + int((idx / total_unmatched) * 55) if total_unmatched > 0 else 90
                     my_bar.progress(p_val, text=f"Stage 2: Scanning candidates ({idx+1}/{total_unmatched})...")
                 
                 row1 = df1.iloc[i]
                 sub1 = str(row1.get('Subject', '')).lower()
-                
                 best_score, best_idx = -1, -1
                 
-                # SPEED TRICK: Only compare rows in B that have at least some similarity
-                # We use a fast Subject filter first
                 for j_idx, row2 in f2_remaining.iterrows():
                     if j_idx in used_f2: continue
-                    
                     sub2 = str(row2.get(mapping.get('Subject', ''), '')).lower()
                     
-                    # Quick check: If subjects are totally different, don't waste time on SequenceMatcher
                     if sub1[:3] == sub2[:3] or sub1[-3:] == sub2[-3:]:
                         score = get_similarity(sub1, sub2)
                         if score > best_score:
